@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
@@ -7,7 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
-from shell import close_shell
+from shell import close_shell, system_shell_env
 from tools import save_text_to_file, search_tool, wikipedia_tool, terminal_run, file_read, file_write
 from ui import agent_calling_tool, agent_reply_start
 
@@ -125,11 +126,38 @@ def _latest_reply(new_messages: list) -> str | None:
             return msg.content
     return None
 
+
+print("Tool and shell activity print as they run. Set AGENT_DEBUG=1 for raw LangChain logs.\n")
+print("Commands: /shell, /shell <cmd>, /chat (in shell mode), /clear, /bye\n")
 while True:
     query = input("~>: ")
     if query.strip() == "/bye":
         close_shell()
         break
+    
+    if query.strip() == "/clear":
+        messages = []
+        print("Messages cleared.")
+        continue
+    
+    if query.strip() == "/shell":
+        print("Shell mode - type /chat to return to chat mode. Each line runs in a fresh subshell")
+        while True:
+            line = input("(shell)$")
+            if line.strip() == "/chat":
+                break
+            if line.strip():
+                subprocess.run(line, shell=True, env=system_shell_env())
+        continue
+    
+    if query.startswith("/shell "):
+        command = query[len("/shell "):].strip()
+        if not command:
+            print("Usage: /shell <command>")
+            continue
+        subprocess.run(command, shell=True, env=system_shell_env())
+        continue
+
 
     prev_count = len(messages)
     messages.append(HumanMessage(content=query))
@@ -144,6 +172,11 @@ while True:
             _print_stream_updates(payload)
         elif mode == "values":
             final_state = payload
+
+    if final_state is None:
+        print("Error: agent produced no response.")
+        messages.pop()
+        continue
 
     messages = final_state["messages"]
     reply = _latest_reply(messages[prev_count:])
