@@ -8,6 +8,32 @@ from langchain_community.utilities import WikipediaAPIWrapper
 from langchain_core.tools import tool
 
 from shell import close_shell, get_shell
+from ui import confirm_prompt, confirm_sensitive, shell_blocked, shell_done, shell_running
+
+INTERACTIVE_COMMAND_PATTERNS = [
+    re.compile(r"\bgh\s+auth\s+(login|refresh)\b", re.I),
+    re.compile(r"\b(vim?|nano|emacs|nvim)\b", re.I),
+    re.compile(r"\b(less|more)\b", re.I),
+    re.compile(r"\bman\b", re.I),
+    re.compile(r"\b(top|htop|btop)\b", re.I),
+    re.compile(r"\bwatch\b", re.I),
+    re.compile(r"\bpasswd\b", re.I),
+    re.compile(r"\bsu\b", re.I),
+    re.compile(r"\b(ipython|bpython)\b", re.I),
+    re.compile(r"\bmysql\b", re.I),
+    re.compile(r"\bpsql\b", re.I),
+    re.compile(r"\bgit\s+commit\b(?![^\n]*\s-m\b)", re.I),
+    re.compile(r"\bgit\s+rebase\b(?![^\n]*--continue)", re.I),
+    re.compile(r"\bgit\s+add\s+(-p|--patch)\b", re.I),
+    re.compile(r"\b(ftp|telnet)\b", re.I),
+    re.compile(r"^python3?\s*$", re.I),
+    re.compile(r"^node\s*$", re.I),
+]
+
+SSH_NONINTERACTIVE = re.compile(
+    r"\bssh\b.*(-T\b|-N\b|-f\b|-o\s+BatchMode=yes)",
+    re.I,
+)
 
 search_tool = DuckDuckGoSearchRun()
 
@@ -32,10 +58,29 @@ def _is_sensitive_command(command: str) -> bool:
     return any(pattern.search(command) for pattern in SENSITIVE_COMMAND_PATTERNS)
 
 
+def _is_interactive_command(command: str) -> bool:
+    stripped = command.strip()
+    if SSH_NONINTERACTIVE.search(stripped):
+        return False
+    if re.search(r"\bssh\b", stripped, re.I):
+        return True
+    return any(pattern.search(stripped) for pattern in INTERACTIVE_COMMAND_PATTERNS)
+
+
+def _interactive_block_message(command: str) -> str:
+    return (
+        "exit_code: blocked\n\n"
+        "Command not run: interactive command (needs a real terminal with keyboard input).\n"
+        "Run it yourself in Konsole or another system terminal, then tell the assistant "
+        "when you're done so it can continue with non-interactive commands.\n\n"
+        "Examples: gh auth login, ssh, vim/nano, git commit without -m, python REPL.\n\n"
+        f"command:\n{command}"
+    )
+
+
 def _confirm_sensitive_command(command: str) -> bool:
-    print(f"\n[confirm] Sensitive command blocked until you approve:")
-    print(f"  {command}")
-    answer = input("Type 'yes' to run, anything else to cancel: ").strip().lower()
+    confirm_sensitive(command)
+    answer = input(confirm_prompt()).strip().lower()
     return answer == "yes"
 
 
@@ -76,20 +121,32 @@ def terminal_run(command: str) -> str:
     project's Python venv so system tools and packages are visible. stdout and
     stderr are merged in the output.
 
+    Interactive commands (gh auth login, ssh, editors, REPLs, etc.) are refused —
+    tell the user to run those in their own terminal.
+
     Sensitive commands (git push, rm, sudo, package installs, etc.) are blocked
     until the user types 'yes' at an interactive prompt."""
+    if _is_interactive_command(command):
+        shell_blocked("interactive", command)
+        return _interactive_block_message(command)
+
     if _is_sensitive_command(command) and not _confirm_sensitive_command(command):
+        shell_blocked("denied", command)
         return (
             "exit_code: blocked\n\n"
             "Command not run: user denied permission.\n\n"
             f"command:\n{command}"
         )
 
+    shell_running(command)
     try:
         output, exit_code = get_shell().run(command)
     except RuntimeError as exc:
+        shell_done(-1, 0)
         return f"exit_code: error\n\n{exc}\n\ncommand:\n{command}"
 
+    line_count = 0 if not output else len(output.splitlines())
+    shell_done(exit_code, line_count)
     return _format_shell_result(command, output, exit_code)
 
 @tool

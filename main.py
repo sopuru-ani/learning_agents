@@ -9,8 +9,11 @@ from pydantic import BaseModel
 
 from shell import close_shell
 from tools import save_text_to_file, search_tool, wikipedia_tool, terminal_run, file_read, file_write
+from ui import agent_calling_tool, agent_reply_start
 
 load_dotenv()
+
+AGENT_DEBUG = os.getenv("AGENT_DEBUG", "").lower() in ("1", "true", "yes")
 
 
 class ResearchResponse(BaseModel):
@@ -47,6 +50,18 @@ Work in steps:
    a command would output.
 7. Base answers about the system, files, git, or auth only on actual tool results.
 
+Interactive commands — never run via terminal_run:
+terminal_run cannot handle programs that need keyboard input (login wizards, ssh sessions,
+editors, REPLs). It will refuse them with exit_code: blocked.
+When the user needs one (e.g. gh auth login), tell them clearly to run it in Konsole or
+their system terminal, then continue after they confirm.
+
+Never pretend a command ran:
+- If the user pastes a shell command in chat, that does NOT execute it. Call terminal_run
+  for non-interactive commands, or direct them to Konsole for interactive ones.
+- Never say a command is "running" or "initiated" unless terminal_run was called and you
+  have its tool result in the conversation.
+
 Sensitive commands — ask before running:
 Before calling terminal_run for a sensitive command, stop and ask the user for explicit
 permission in chat. State the exact command you want to run and wait for approval.
@@ -82,7 +97,7 @@ agent = create_agent(
     model=llm,
     tools=[search_tool, wikipedia_tool, save_text_to_file, terminal_run, file_read, file_write],
     system_prompt=SYSTEM_PROMPT,
-    debug=True,
+    debug=AGENT_DEBUG,
     middleware=[
         ToolRetryMiddleware(
             max_retries=2,
@@ -93,6 +108,23 @@ agent = create_agent(
 
 messages = []
 
+
+def _print_stream_updates(event: dict) -> None:
+    for update in event.values():
+        if not isinstance(update, dict):
+            continue
+        for msg in update.get("messages", []):
+            if isinstance(msg, AIMessage) and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    agent_calling_tool(tc["name"], tc.get("args", {}))
+
+
+def _latest_reply(new_messages: list) -> str | None:
+    for msg in reversed(new_messages):
+        if isinstance(msg, AIMessage) and msg.content:
+            return msg.content
+    return None
+
 while True:
     query = input("~>: ")
     if query.strip() == "/bye":
@@ -101,15 +133,20 @@ while True:
 
     prev_count = len(messages)
     messages.append(HumanMessage(content=query))
-    result = agent.invoke({"messages": messages})
-    messages = result["messages"]
 
-    for msg in messages[prev_count:]:
-        if isinstance(msg, AIMessage) and msg.tool_calls:
-            for tc in msg.tool_calls:
-                print(f"[tool] {tc['name']}({tc['args']})")
+    final_state = None
+    for chunk in agent.stream(
+        {"messages": messages},
+        stream_mode=["updates", "values"],
+    ):
+        mode, payload = chunk
+        if mode == "updates":
+            _print_stream_updates(payload)
+        elif mode == "values":
+            final_state = payload
 
-    for msg in reversed(messages):
-        if isinstance(msg, AIMessage) and msg.content:
-            print(msg.content)
-            break
+    messages = final_state["messages"]
+    reply = _latest_reply(messages[prev_count:])
+    if reply:
+        agent_reply_start()
+        print(reply)
