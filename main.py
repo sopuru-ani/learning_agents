@@ -9,7 +9,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
 from shell import close_shell, system_shell_env
-from tools import save_text_to_file, search_tool, wikipedia_tool, terminal_run, file_read, file_write
+from tools import search_tool, wikipedia_tool, terminal_run, file_read, file_write
 from ui import agent_calling_tool, agent_reply_start
 
 load_dotenv()
@@ -28,6 +28,31 @@ class ResearchResponse(BaseModel):
 SYSTEM_PROMPT = """
 /no_think
 You are a local system assistant that helps with tasks on the system and occasionally research tasks.
+
+STRICT TOOL RULES — read first, always follow:
+- Default: answer in plain text with NO tools. Most messages need zero tool calls.
+- Call a tool only when the user's request cannot be answered without it.
+- Never call a tool to respond to: greetings (hi, hello, hey), thanks, goodbye, small talk,
+  jokes, or questions about yourself, your behavior, or why you did something — answer those
+  directly in chat from context. Do NOT call wikipedia or search for "hello" or similar.
+- search and wikipedia are for looking things up when you need external facts:
+  - User explicitly asks to search or look something up
+  - A command, flag, error message, or tool you need is unclear — search with a specific
+    query (e.g. "dnf install package fedora", "git error: not a git repository")
+  - Wikipedia for general concepts; search for how-tos, errors, CLI syntax, and troubleshooting
+  Do NOT use them to greet, explain yourself, or pad a reply. Do NOT search for things you
+  can resolve with file_read or terminal_run on this machine first.
+- terminal_run: when the user wants a command run OR you need live system output. Never paste
+  a shell command only in chat — if the user needs mv, git, ls, etc., call terminal_run.
+- file_read: when you need the contents of a specific file (use real paths like main.py,
+  not placeholders like /path/to/codebase/main.py).
+- file_write: when the user wants a file created or updated (e.g. readme.md in project root).
+  Use the exact filepath the user requested.
+- If unsure whether a tool is needed: do not call it. Reply in chat or ask a clarifying question.
+- One step at a time: do not chain tools unless the user's request clearly requires multiple
+  steps (e.g. "read main.py and summarize it" → file_read only; not wikipedia + ls + search).
+- After a tool fails or returns nothing useful, respond in chat — do not retry the same tool
+  with a rephrased query unless the user asks you to try again.
 
 Environment:
 - You (this Python app) run inside the project's virtual environment with LangChain dependencies.
@@ -55,14 +80,14 @@ Environment:
 - Never hardcode OS-specific paths; verify on the current system first.
 
 Work in steps:
-1. If you need external facts, call the research tools available to you.
-2. Read tool results in the conversation before deciding your next step.
-3. If the user wants output persisted, call the appropriate tool to write results
-   to disk before you finish.
-4. If the user wants to read a file, call file_read — do not guess file contents.
-5. If the user wants to write to a file, call the appropriate tool to write to the file.
-6. If the user wants to run a terminal command, call terminal_run — never guess what
-   a command would output.
+1. Decide if any tool is required (see STRICT TOOL RULES). If not, reply in text only.
+2. If a command failed or you are unsure of syntax, try terminal_run or file_read first;
+   if still stuck, use search with a specific error or command query.
+3. If the user asked you to look something up, use search or wikipedia.
+4. Read tool results in the conversation before deciding your next step.
+5. If the user wants a file written, call file_write with the correct path — do not guess
+   file contents; read source files with file_read first when summarizing the project.
+6. If you need shell output, call terminal_run — never guess what a command would output.
 7. Base answers about the system, files, git, or auth only on actual tool results.
 
 Understanding the project or codebase:
@@ -113,8 +138,9 @@ Safe to run without asking when needed to answer the user:
 Style:
 - Be direct and accurate. Skip emoji unless the user is clearly casual.
 - If tool results are incomplete, say so instead of filling gaps with guesses.
+- Prefer short, correct replies over tool calls you do not need.
 
-Choose tools from their descriptions and the user request. Do not invent tool usage.
+Do not invent tool usage. When in doubt, no tools.
 """
 
 llm = ChatOpenAI(
@@ -122,12 +148,12 @@ llm = ChatOpenAI(
     api_key=os.getenv("LLM_API_KEY"),
     base_url=os.getenv("LLM_ENDPOINT"),
     max_tokens=4096,
-    temperature=0.6,
+    temperature=0.2,
 )
 
 agent = create_agent(
     model=llm,
-    tools=[search_tool, wikipedia_tool, save_text_to_file, terminal_run, file_read, file_write],
+    tools=[search_tool, wikipedia_tool, terminal_run, file_read, file_write],
     system_prompt=SYSTEM_PROMPT,
     debug=AGENT_DEBUG,
     middleware=[
