@@ -1,0 +1,17 @@
+# Python project boilerplate
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+
+# Virtual environment
+venv/
+.env
+
+# Data files (commonly excluded unless needed in repo)
+data/
+
+# Miscellaneous
+old/
