@@ -171,33 +171,37 @@ def file_write(filepath: str, content: str) -> str:
 
 @tool
 def remember_project(text: str) -> str:
-    """Save a durable fact about this project/repo for later sessions.
+    """Commit a durable, self-contained fact about this repo to Cognee project memory.
 
-    Use for stack, architecture, conventions, or other repo-specific knowledge
-    the user wants remembered. Not for transient chat or one-off command output."""
+    REQUIRED when the user asks you to remember/save/note something about this repo.
+    Also use proactively for durable repo facts when appropriate. Pass a complete
+    statement (not chat shorthand). Not for secrets or machine-wide facts."""
     return _remember_project(text)
 
 
 @tool
 def remember_device(text: str) -> str:
-    """Save a durable fact about this machine for use across all projects.
+    """Commit a durable, self-contained fact about this machine to Cognee device memory.
 
-    Use for OS/distro, package manager, installed tools, or device-wide preferences.
-    Not for project-specific or one-off details."""
+    REQUIRED when the user asks you to remember/save/note something about this machine.
+    Also use proactively for durable machine facts when appropriate. Pass a complete
+    statement (not chat shorthand). Not for secrets or repo-specific facts."""
     return _remember_device(text)
 
 
 @tool
 def recall_project(query: str) -> str:
-    """Search project memory for facts about this repo.
+    """Search Cognee project memory for facts about this repo.
 
-    Use when past project-specific knowledge may help answer the user."""
+    Call before remember_project when the user asks about prior repo context, or
+    to avoid storing duplicate facts."""
     return _recall_project(query)
 
 
 @tool
 def recall_device(query: str) -> str:
-    """Search device memory for facts about this machine.
+    """Search Cognee device memory for facts about this machine.
 
-    Use when machine-wide knowledge (OS, tools, preferences) may help."""
+    Call before remember_device when the user asks about machine setup or prefs,
+    or to avoid storing duplicate facts."""
     return _recall_device(query)
