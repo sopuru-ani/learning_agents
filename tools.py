@@ -7,6 +7,12 @@ from langchain_community.tools import DuckDuckGoSearchRun, WikipediaQueryRun
 from langchain_community.utilities import WikipediaAPIWrapper
 from langchain_core.tools import tool
 
+from cognee_memory import (
+    recall_device as _recall_device,
+    recall_project as _recall_project,
+    remember_device as _remember_device,
+    remember_project as _remember_project,
+)
 from shell import close_shell, get_shell
 from ui import confirm_prompt, confirm_sensitive, shell_blocked, shell_done, shell_running
 
@@ -161,3 +167,37 @@ def file_write(filepath: str, content: str) -> str:
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
     return f"File {filepath} successfully written."
+
+
+@tool
+def remember_project(text: str) -> str:
+    """Save a durable fact about this project/repo for later sessions.
+
+    Use for stack, architecture, conventions, or other repo-specific knowledge
+    the user wants remembered. Not for transient chat or one-off command output."""
+    return _remember_project(text)
+
+
+@tool
+def remember_device(text: str) -> str:
+    """Save a durable fact about this machine for use across all projects.
+
+    Use for OS/distro, package manager, installed tools, or device-wide preferences.
+    Not for project-specific or one-off details."""
+    return _remember_device(text)
+
+
+@tool
+def recall_project(query: str) -> str:
+    """Search project memory for facts about this repo.
+
+    Use when past project-specific knowledge may help answer the user."""
+    return _recall_project(query)
+
+
+@tool
+def recall_device(query: str) -> str:
+    """Search device memory for facts about this machine.
+
+    Use when machine-wide knowledge (OS, tools, preferences) may help."""
+    return _recall_device(query)

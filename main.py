@@ -8,11 +8,33 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
+from agent_paths import DEVICE_CONFIG_DIR, ensure_agent_dirs, project_agent_dir, project_session_db
+from cognee_memory import cognee_available, init_cognee_memory
+from session_memory import (
+    clear_session,
+    open_session_checkpointer,
+    project_thread_id,
+    session_config,
+    session_message_count,
+)
 from shell import close_shell, system_shell_env
-from tools import search_tool, wikipedia_tool, terminal_run, file_read, file_write
+from tools import (
+    search_tool,
+    wikipedia_tool,
+    terminal_run,
+    file_read,
+    file_write,
+    remember_project,
+    remember_device,
+    recall_project,
+    recall_device,
+)
 from ui import agent_calling_tool, agent_reply_start
 
 load_dotenv()
+
+PROJECT_ROOT = ensure_agent_dirs()
+init_cognee_memory(PROJECT_ROOT)
 
 AGENT_DEBUG = os.getenv("AGENT_DEBUG", "").lower() in ("1", "true", "yes")
 
@@ -48,6 +70,13 @@ STRICT TOOL RULES — read first, always follow:
   not placeholders like /path/to/codebase/main.py).
 - file_write: when the user wants a file created or updated (e.g. readme.md in project root).
   Use the exact filepath the user requested.
+- recall_project / recall_device: when past facts may help — project memory for this repo,
+  device memory for this machine (OS, package manager, installed tools, preferences).
+  Do not recall for greetings or questions you can answer without memory.
+- remember_project: save durable facts about THIS repo (stack, conventions, architecture).
+- remember_device: save durable facts about THIS machine, useful across projects.
+  Do not remember transient chat, one-off command output, or guesses.
+  Session SQLite already stores chat history; Cognee is for facts worth reusing later.
 - If unsure whether a tool is needed: do not call it. Reply in chat or ask a clarifying question.
 - One step at a time: do not chain tools unless the user's request clearly requires multiple
   steps (e.g. "read main.py and summarize it" → file_read only; not wikipedia + ls + search).
@@ -151,11 +180,26 @@ llm = ChatOpenAI(
     temperature=0.2,
 )
 
+SESSION_THREAD_ID = project_thread_id(PROJECT_ROOT)
+SESSION_CHECKPOINTER = open_session_checkpointer(PROJECT_ROOT)
+SESSION_CONFIG = session_config(SESSION_THREAD_ID)
+
 agent = create_agent(
     model=llm,
-    tools=[search_tool, wikipedia_tool, terminal_run, file_read, file_write],
+    tools=[
+        search_tool,
+        wikipedia_tool,
+        terminal_run,
+        file_read,
+        file_write,
+        remember_project,
+        remember_device,
+        recall_project,
+        recall_device,
+    ],
     system_prompt=SYSTEM_PROMPT,
     debug=AGENT_DEBUG,
+    checkpointer=SESSION_CHECKPOINTER,
     middleware=[
         ToolRetryMiddleware(
             max_retries=2,
@@ -163,9 +207,6 @@ agent = create_agent(
         ),
     ],
 )
-
-messages = []
-
 
 def _print_stream_updates(event: dict) -> None:
     for update in event.values():
@@ -186,15 +227,29 @@ def _latest_reply(new_messages: list) -> str | None:
 
 print("Tool and shell activity print as they run. Set AGENT_DEBUG=1 for raw LangChain logs.\n")
 print("Commands: /shell, /shell <cmd>, /chat (in shell mode), /clear, /bye\n")
+print(f"Project root:  {PROJECT_ROOT}")
+print(f"Project data:  {project_agent_dir(PROJECT_ROOT)}  (session + Cognee project tier)")
+print(f"Device data:   {DEVICE_CONFIG_DIR}  (Cognee device tier)")
+if cognee_available():
+    print("Cognee:        ready (remember/recall tools enabled)")
+else:
+    print("Cognee:        not installed — run: pip install cognee")
+_stored = session_message_count(agent, SESSION_CONFIG)
+if _stored:
+    print(f"Session:       resuming ({_stored} messages in {project_session_db(PROJECT_ROOT).name})")
+else:
+    print(f"Session:       new ({project_session_db(PROJECT_ROOT).name})")
+print()
 while True:
     query = input("~>: ")
     if query.strip() == "/bye":
         close_shell()
+        SESSION_CHECKPOINTER.conn.close()
         break
     
     if query.strip() == "/clear":
-        messages = []
-        print("Messages cleared.")
+        clear_session(SESSION_CHECKPOINTER, SESSION_THREAD_ID)
+        print("Session cleared.")
         continue
     
     if query.strip() == "/shell":
@@ -216,12 +271,12 @@ while True:
         continue
 
 
-    prev_count = len(messages)
-    messages.append(HumanMessage(content=query))
+    prev_count = session_message_count(agent, SESSION_CONFIG)
 
     final_state = None
     for chunk in agent.stream(
-        {"messages": messages},
+        {"messages": [HumanMessage(content=query)]},
+        config=SESSION_CONFIG,
         stream_mode=["updates", "values"],
     ):
         mode, payload = chunk
@@ -232,11 +287,9 @@ while True:
 
     if final_state is None:
         print("Error: agent produced no response.")
-        messages.pop()
         continue
 
-    messages = final_state["messages"]
-    reply = _latest_reply(messages[prev_count:])
+    reply = _latest_reply(final_state["messages"][prev_count:])
     if reply:
         agent_reply_start()
         print(reply)

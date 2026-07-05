@@ -13,4 +13,7 @@ venv/
 # Data files (commonly excluded unless needed in repo)
 data/
 
+# Per-project agent state (session DB, Cognee project memory)
+.agent/
+
 # Miscellaneous

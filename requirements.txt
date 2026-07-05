@@ -4,5 +4,7 @@ langchain-openai
 langchain-anthropic
 wikipedia
 ddgs
+langgraph-checkpoint-sqlite
 python-dotenv
 pydantic
+cognee
